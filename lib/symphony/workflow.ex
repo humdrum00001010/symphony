@@ -6,6 +6,8 @@ defmodule Symphony.Workflow do
   terminate the workflow process.
   """
 
+  alias Symphony.Planners.Github
+
   use GenServer
   require Logger
 
@@ -16,8 +18,7 @@ defmodule Symphony.Workflow do
   @impl true
   def init(opts) do
     {:ok,
-     opts
-     |> Keyword.get(:path, "./WORKFLOW.md")
+     Keyword.get(opts, :path, "./WORKFLOW.md")
      |> get_workflow()
      |> assign_interval(Keyword.get(opts, :interval, 5_000)), {:continue, :start}}
   end
@@ -34,10 +35,19 @@ defmodule Symphony.Workflow do
   end
 
   defp get_workflow(path) do
-    # TODO: construct before / after, adapter, prompt of workflow.
-    # TODO: here, we do configurations.
-    # ? where should we free the completed ticket?
-    %{path: path}
+    ["", yaml, prompt] =
+      File.read!(path)
+      |> String.split(~r/^---[ \t]*\r?$/m, parts: 3)
+
+    YamlElixir.read_from_string!(yaml)
+    |> Map.put(:prompt, String.trim(prompt))
+  end
+
+  defp fetch_issues(%{"config" => %{"vendor" => "github"} = config}) do
+    Github.fetch_issues(%{
+      id: config["id"],
+      states: config["states"]
+    })
   end
 
   @impl true
@@ -47,8 +57,7 @@ defmodule Symphony.Workflow do
 
     {:ok, _task} =
       Task.start(fn ->
-        # TODO: Fetch updates through adapter, set by get_workflow()
-        send(pid, {:update, {:ok, []}})
+        send(pid, {:update, fetch_issues(state)})
       end)
 
     {:noreply, state}

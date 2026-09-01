@@ -19,7 +19,9 @@ defmodule Symphony.MixProject do
   end
 
   defp deps do
-    []
+    [
+      {:yaml_elixir, "~> 2.12.2"}
+    ]
   end
 
   defp aliases do

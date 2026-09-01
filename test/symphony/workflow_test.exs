@@ -3,19 +3,27 @@ defmodule Symphony.WorkflowTest do
 
   alias Symphony.Workflow
 
-  test "starts from its path and polling interval" do
-    workflow =
-      start_supervised!({Workflow, path: "first.md", interval: 60_000})
+  test "starts from its workflow file" do
+    path = "workflows/WORKFLOW.md"
 
-    assert %{path: "first.md", interval: 60_000} = :sys.get_state(workflow)
+    workflow =
+      start_supervised!({Workflow, path: path, interval: 60_000})
+
+    assert %{
+             "config" => %{"vendor" => "github"},
+             interval: 60_000,
+             prompt: "prompts..."
+           } = :sys.get_state(workflow)
   end
 
   test "starts more than one workflow under the same supervisor" do
+    path = "workflows/WORKFLOW.md"
+
     {:ok, supervisor} =
-      ["first.md", "second.md"]
-      |> Enum.map(fn path ->
-        Supervisor.child_spec({Workflow, path: path}, id: path)
-      end)
+      [
+        Supervisor.child_spec({Workflow, path: path}, id: :first),
+        Supervisor.child_spec({Workflow, path: path}, id: :second)
+      ]
       |> Supervisor.start_link(strategy: :one_for_one)
 
     assert %{active: 2, workers: 2} = Supervisor.count_children(supervisor)
