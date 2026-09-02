@@ -17,7 +17,7 @@ defmodule Symphony.GithubPlannerTest do
       gh,
       ~S|#!/bin/sh
 printf '%s\n' "$*" > "$GH_ARGS_LOG"
-printf '%s' '[{"id":"issue-1","author":null,"title":"Fix","body":"Body","state":"OPEN","comments":[{"id":"comment-1","author":null,"body":"Comment"}]}]'
+printf '%s' '[{"number":1,"author":{"login":"me"},"title":"Fix","body":"Body","state":"OPEN","updatedAt":"2026-01-02T00:00:00Z","comments":[{"id":"comment-1","author":{"login":"you"},"body":"Comment","createdAt":"2026-01-01T00:00:00Z"}]}]'
 |
     )
 
@@ -34,19 +34,25 @@ printf '%s' '[{"id":"issue-1","author":null,"title":"Fix","body":"Body","state":
     assert {:ok,
             [
               %{
-                id: "issue-1",
-                author: "",
+                id: "1",
+                author: "me",
                 title: "Fix",
                 content: "Body",
-                state: "open",
+                state: "OPEN",
+                version: "2026-01-02T00:00:00Z",
                 sub_issue: nil,
                 comments: [
-                  %{id: "comment-1", author: "", content: "Comment", comments: []}
+                  %{id: "comment-1", author: "you", content: "Comment", comments: []}
                 ]
               }
-            ]} = Github.fetch_issues(%{id: "owner/repo", states: ["Open"]})
+            ]} =
+             Github.fetch_issues(%{
+               id: "owner/repo",
+               states: ["OPEN", "CLOSED"],
+               terminal_states: ["CLOSED"]
+             })
 
     assert File.read!(arguments) =~
-             "issue list --repo owner/repo --author @me --state open"
+             "issue list --repo owner/repo --author @me --state all"
   end
 end

@@ -3,3 +3,4 @@ bin/
 deps/
 .DS_Store
 .env
+workflows/*.md.json

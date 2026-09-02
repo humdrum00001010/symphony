@@ -2,11 +2,8 @@ defmodule Symphony.Planners.Github do
   @behaviour Symphony.Planners
 
   @impl true
-  def fetch_issues(%{id: repository, states: states})
-      when is_binary(repository) and is_list(states) do
-    states = Enum.map(states, &String.downcase/1)
-    state = if length(states) == 1, do: hd(states), else: "all"
-
+  # * github's issue doesn't have that rich states
+  def fetch_issues(%{id: repository, states: states}) do
     {json, 0} =
       System.cmd(
         "gh",
@@ -18,37 +15,60 @@ defmodule Symphony.Planners.Github do
           "--author",
           "@me",
           "--state",
-          state,
+          "all",
           "--limit",
           "100000",
           "--json",
-          "id,author,title,body,state,comments"
-        ],
-        stderr_to_stdout: true
+          "number,author,title,body,state,updatedAt,comments"
+        ]
       )
 
     {:ok,
      json
      |> JSON.decode!()
-     |> Enum.filter(&(String.downcase(&1["state"]) in states))
-     |> Enum.map(fn issue ->
-       %{
-         id: issue["id"],
-         author: (issue["author"] || %{})["login"] || "",
-         title: issue["title"],
-         content: issue["body"] || "",
-         state: String.downcase(issue["state"]),
-         sub_issue: nil,
-         comments:
-           Enum.map(issue["comments"], fn comment ->
-             %{
-               id: comment["id"],
-               author: (comment["author"] || %{})["login"] || "",
-               content: comment["body"] || "",
-               comments: []
-             }
-           end)
-       }
-     end)}
+     |> Enum.map(&from_json/1)
+     |> Enum.filter(&(&1.state in states))}
+  end
+
+  @impl true
+  def fetch_issue(%{id: repository}, issue_id) do
+    {json, 0} =
+      System.cmd(
+        "gh",
+        [
+          "issue",
+          "view",
+          issue_id,
+          "--repo",
+          repository,
+          "--json",
+          "number,author,title,body,state,updatedAt,comments"
+        ]
+      )
+
+    {:ok, json |> JSON.decode!() |> from_json()}
+  end
+
+  defp from_json(issue) do
+    %{
+      id: to_string(issue["number"]),
+      author: issue["author"]["login"],
+      title: issue["title"],
+      content: issue["body"],
+      state: issue["state"],
+      version: issue["updatedAt"],
+      sub_issue: nil,
+      comments:
+        issue["comments"]
+        |> Enum.sort_by(& &1["createdAt"])
+        |> Enum.map(fn comment ->
+          %{
+            id: comment["id"],
+            author: comment["author"]["login"],
+            content: comment["body"],
+            comments: []
+          }
+        end)
+    }
   end
 end

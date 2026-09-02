@@ -3,13 +3,18 @@ config:
   vendor: github
   id: humdrum00001010/symphony
   states:
-    - Open
+    - OPEN
   terminal_states:
-    - Closed
-  workspace: ~/.symphony/
+    - CLOSED
+  workspace: ./.symphony/
 mount: git clone --depth 1 https://github.com/humdrum00001010/symphony
 terminate: rm -rf $workspace
-spawn: codex app-server --config 'model="gpt-5.6"' --config model_reasoning_effort=xhigh
+agent:
+  vendor: codex
+  model: gpt-5.6-sol
+  reasoning: high
 ---
 
-prompts...
+Make empty PR corresponding the issue you received.
+
+Append comment on the issue with "∎" when you are done.

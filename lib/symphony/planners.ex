@@ -1,7 +1,8 @@
 defmodule Symphony.Planners do
-  @type t :: %{
+  @type repo :: %{
           id: String.t(),
-          states: [String.t()]
+          states: [String.t()],
+          terminal_states: [String.t()]
         }
   @type issue :: %{
           id: String.t(),
@@ -9,6 +10,7 @@ defmodule Symphony.Planners do
           title: String.t(),
           content: String.t(),
           state: String.t(),
+          version: String.t(),
           # * not used frequently
           sub_issue: issue() | nil,
           comments: [article()]
@@ -20,5 +22,30 @@ defmodule Symphony.Planners do
           content: String.t(),
           comments: [article()]
         }
-  @callback fetch_issues(params :: t()) :: {:ok, [issue()]} | {:error, any()}
+  @callback fetch_issues(params :: repo()) :: {:ok, [issue()]} | {:error, any()}
+  @callback fetch_issue(params :: repo(), issue_id :: String.t()) ::
+              {:ok, issue()} | {:error, any()}
+
+  def done?(%{comments: []}), do: false
+
+  def done?(%{comments: comments}) do
+    comments
+    |> List.last()
+    |> Map.get(:content, "")
+    |> String.contains?("∎")
+  end
+
+  def done?(%{state: state} = issue, %{terminal_states: terminal_states}) do
+    state in terminal_states or done?(issue)
+  end
+
+  def completed?(planner, %{repo: params, issue: issue_id}) do
+    case planner.fetch_issue(params, issue_id) do
+      {:ok, issue} ->
+        done?(issue, params)
+
+      {:error, _} ->
+        false
+    end
+  end
 end
