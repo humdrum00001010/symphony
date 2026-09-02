@@ -60,14 +60,14 @@ defmodule Mix.Tasks.Gen.Workflow do
       reasoning: high
     ---
 
-    Your session pauses only when the last GitHub issue comment ends with "∎". Use `gh` CLI.
+    Your session pauses only when the last GitHub issue comment ends with "∎". Use `gh` CLI. If user needs to intervene, explain it in comment and ends with "∎"
 
     You are responsible with implementation & PR of the issue.
 
     Workflow is simple:
     - Read CONTRIBUTING.md if exists, follow it, especially with tests before PR.
     - Prefer debugger to understand the nature of the issue. Write debugger script when supported by the debugger.
-    - When you could reduce problem into single function, explain it with the name in issue comment, work on, make PR.
+    - When you could reduce problem into single function, explain it with the name in issue comment, with concise code implementation of it, work on, make PR.
 
     Branch in git with <service>/<content> branch name, expected to use clean commit messages.
 

@@ -42,11 +42,12 @@ defmodule Symphony.Workflow do
   end
 
   def update_issues(%{issues: current} = state, issues) do
-    for issue <- issues,
-        !Planners.done?(issue, state.repo) do
-      current
-      |> Enum.find(&(&1.id == issue.id))
-      |> update_agent(issue, state)
+    for issue <- issues, !Planners.terminal?(issue, state.repo) do
+      if Planners.done?(issue) do
+        Enum.find(current, Map.put(issue, :session_id, nil), &(&1.id == issue.id))
+      else
+        Enum.find(current, &(&1.id == issue.id)) |> update_agent(issue, state)
+      end
     end
     |> put_issues(state)
   end
@@ -60,7 +61,7 @@ defmodule Symphony.Workflow do
 
   defp write(%{path: path, issues: issues} = state) do
     File.write!(
-      path <> ".json",
+      Path.rootname(path) <> ".json",
       issues
       |> Enum.map(fn %{id: id} = issue ->
         %{id: id, session_id: Map.get(issue, :session_id)}
@@ -72,7 +73,7 @@ defmodule Symphony.Workflow do
   end
 
   defp read(%{path: path} = state) do
-    case File.read(path <> ".json") do
+    case File.read(Path.rootname(path) <> ".json") do
       {:ok, json} ->
         Map.put(
           state,
@@ -133,6 +134,7 @@ defmodule Symphony.Workflow do
   defp update_agent(nil, issue, state) do
     issue
     |> Map.put(:session_id, nil)
+    |> mount_worktree(state)
     |> Agent.start_agent(state)
   end
 
@@ -141,50 +143,146 @@ defmodule Symphony.Workflow do
          %{version: version} = issue,
          state
        ) do
-    case Process.alive?(agent) do
-      true -> current
-      false -> issue |> Map.put(:session_id, session_id) |> Agent.start_agent(state)
+    if Process.alive?(agent) do
+      current
+    else
+      :ok = Agent.stop_agent(current)
+
+      issue
+      |> Map.put(:session_id, session_id)
+      |> mount_worktree(state)
+      |> Agent.start_agent(state)
     end
   end
 
   defp update_agent(
-         %{agent: agent, session_id: session_id},
+         %{agent: agent, session_id: session_id} = current,
          issue,
          state
        ) do
-    case Process.alive?(agent) do
-      true ->
-        :ok = Agent.send_message(agent, issue)
+    if Process.alive?(agent) do
+      :ok = Agent.send_message(agent, issue)
 
-        issue
-        |> Map.put(:agent, agent)
-        |> Map.put(:session_id, session_id)
+      issue
+      |> Agent.assign_agent(current)
+      |> Map.put(:session_id, session_id)
+    else
+      :ok = Agent.stop_agent(current)
 
-      false ->
-        issue
-        |> Map.put(:session_id, session_id)
-        |> Agent.start_agent(state)
+      issue
+      |> Map.put(:session_id, session_id)
+      |> mount_worktree(state)
+      |> Agent.start_agent(state)
     end
   end
 
   defp update_agent(%{session_id: session_id}, issue, state) do
     issue
     |> Map.put(:session_id, session_id)
+    |> mount_worktree(state)
     |> Agent.start_agent(state)
   end
 
   defp put_issues(issues, %{issues: issues} = state), do: state
 
   defp put_issues(issues, state) do
-    for %{id: id, agent: agent} <- state.issues,
-        Process.alive?(agent),
+    for %{id: id} = issue <- state.issues,
         Enum.all?(issues, &(&1.id != id)) do
-      :ok = DynamicSupervisor.terminate_child(state.supervisor, agent)
+      :ok = Agent.stop_agent(issue)
+      :ok = terminate_worktree(issue, state)
     end
 
     state
     |> Map.put(:issues, issues)
     |> write()
+  end
+
+  defp terminate_worktree(
+         %{id: issue},
+         %{
+           "config" => %{"id" => repo_id, "workspace" => workspace},
+           "terminate" => command
+         } = state
+       ) do
+    :ok =
+      run_command(
+        command,
+        [
+          {"workspace", Path.expand(workspace)},
+          {"repo_id", repo_id},
+          {"issue", issue}
+        ],
+        state
+      )
+
+    :ok
+  end
+
+  defp mount_worktree(
+         %{id: issue} = current,
+         %{"config" => %{"id" => repo_id, "workspace" => workspace}, "mount" => command} =
+           state
+       ) do
+    if File.dir?(Path.join([Path.expand(workspace), repo_id, issue])) do
+      current
+    else
+      :ok =
+        run_command(
+          command,
+          [
+            {"workspace", Path.expand(workspace)},
+            {"repo_id", repo_id},
+            {"issue", issue}
+          ],
+          state
+        )
+
+      current
+    end
+  end
+
+  defp run_command(command, env, state) do
+    port =
+      Port.open(
+        {:spawn_executable, "/bin/sh"},
+        [
+          :binary,
+          :exit_status,
+          {:args, ["-c", command]},
+          {:env,
+           Enum.map(env, fn {key, value} ->
+             {String.to_charlist(key), String.to_charlist(value)}
+           end)}
+        ]
+      )
+
+    {:os_pid, pid} = Port.info(port, :os_pid)
+
+    await_command(
+      port,
+      pid,
+      command,
+      System.monotonic_time(:millisecond) + Map.get(state, "timeout", 30_000)
+    )
+  end
+
+  defp await_command(port, pid, command, deadline) do
+    receive do
+      {^port, {:data, _data}} -> await_command(port, pid, command, deadline)
+      {^port, {:exit_status, 0}} -> :ok
+      {^port, {:exit_status, status}} -> exit({:command_failed, command, status})
+    after
+      max(deadline - System.monotonic_time(:millisecond), 0) ->
+        reference = Port.monitor(port)
+        {_, 0} = System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true)
+
+        receive do
+          {:DOWN, ^reference, :port, ^port, _reason} -> :ok
+        end
+
+        {_, 1} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
+        exit({:command_timeout, command})
+    end
   end
 
   @impl true

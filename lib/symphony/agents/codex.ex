@@ -5,7 +5,7 @@ defmodule Symphony.Agents.Codex do
 
   @behaviour Protocol
 
-  def command, do: "codex app-server"
+  def command, do: "codex app-server 2>/dev/null"
 
   @impl true
   def handle_message(:wake, state) do
@@ -13,12 +13,18 @@ defmodule Symphony.Agents.Codex do
   end
 
   def handle_message({port, {:data, data}}, %{port: port} = state) do
-    data
-    |> String.split("\n", trim: true)
+    {messages, [buffer]} =
+      state
+      |> Map.get(:buffer, "")
+      |> Kernel.<>(data)
+      |> String.split("\n")
+      |> Enum.split(-1)
+
+    messages
     |> Enum.map(&parse_message/1)
     |> Enum.each(&send(self(), &1))
 
-    {:noreply, state}
+    {:noreply, Map.put(state, :buffer, buffer)}
   end
 
   def handle_message(%{"id" => 0, "result" => _result}, state) do
@@ -40,7 +46,17 @@ defmodule Symphony.Agents.Codex do
       ) do
     {:noreply,
      state
-     |> start_turn([])}
+     |> start_turn([%{type: "text", text: "Continue."}])}
+  end
+
+  def handle_message(
+        %{"id" => 3, "result" => %{"turn" => %{"id" => turn_id}}},
+        %{pending: pending} = state
+      ) do
+    handle_message(
+      {:update, pending},
+      state |> Map.delete(:pending) |> Map.put(:turn_id, turn_id)
+    )
   end
 
   def handle_message(%{"id" => 3, "result" => %{"turn" => %{"id" => turn_id}}}, state) do
@@ -63,6 +79,10 @@ defmodule Symphony.Agents.Codex do
      })}
   end
 
+  def handle_message({:update, issue}, state) do
+    {:noreply, Map.put(state, :pending, issue)}
+  end
+
   def handle_message(%{"id" => 2, "error" => _}, state) do
     {:ok, state} = Protocol.put_session(state, nil)
     {:noreply, state |> start_session()}
@@ -72,7 +92,11 @@ defmodule Symphony.Agents.Codex do
     if Planners.completed?(state.planner, state) do
       {:stop, :normal, state}
     else
-      {:noreply, state |> start_turn([])}
+      {:noreply,
+       state
+       |> start_turn([
+         %{type: "text", text: "I think I said enough."}
+       ])}
     end
   end
 
@@ -102,12 +126,12 @@ defmodule Symphony.Agents.Codex do
     Agent.send_message(state, %{
       method: "thread/resume",
       id: 2,
-      params: %{threadId: session_id}
+      params: %{threadId: session_id, excludeTurns: true}
     })
   end
 
   defp start_turn(%{session_id: session_id} = state, input) do
-    Agent.send_message(state, %{
+    Agent.send_message(Map.delete(state, :turn_id), %{
       method: "turn/start",
       id: 3,
       params: %{

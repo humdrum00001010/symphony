@@ -32,17 +32,16 @@ defmodule Symphony.Planners do
     comments
     |> List.last()
     |> Map.get(:content, "")
-    |> String.contains?("∎")
+    |> String.ends_with?("∎")
   end
 
-  def done?(%{state: state} = issue, %{terminal_states: terminal_states}) do
-    state in terminal_states or done?(issue)
-  end
+  def terminal?(%{state: state}, %{terminal_states: terminal_states}),
+    do: state in terminal_states
 
   def completed?(planner, %{repo: params, issue: issue_id}) do
     case planner.fetch_issue(params, issue_id) do
       {:ok, issue} ->
-        done?(issue, params)
+        done?(issue)
 
       {:error, _} ->
         false
