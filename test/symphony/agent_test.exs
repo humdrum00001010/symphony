@@ -117,9 +117,11 @@ defmodule Symphony.AgentTest do
     assert_receive {:update_session, "1", "thread-1"}
     assert File.read!(runs) == "run\n"
     assert File.read!(messages) =~ "\"method\":\"thread/resume\""
+    assert File.read!(messages) =~ "\"excludeTurns\":true"
     assert File.read!(messages) =~ "\"method\":\"thread/start\""
     assert File.read!(messages) =~ "\"approvalPolicy\":\"never\""
     assert File.read!(messages) =~ "\"type\":\"dangerFullAccess\""
+    assert File.read!(messages) =~ "\"text\":\"I think I said enough.\""
     assert File.read!(messages) |> String.split("\"method\":\"turn/start\"") |> length() == 3
     assert File.read!(messages) |> String.split("Fix the issue") |> length() == 2
     assert File.read!(checks) == "2"
@@ -133,5 +135,25 @@ defmodule Symphony.AgentTest do
              Codex.handle_message({:port, {:data, ~s(,"result":{}}\n)}}, state)
 
     assert_receive %{"id" => 0, "result" => %{}}
+  end
+
+  test "steers the latest update after the turn starts" do
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    assert {:noreply, state = %{pending: %{version: 2}}} =
+             Codex.handle_message({:update, %{version: 2}}, %{
+               port: port,
+               session_id: "thread"
+             })
+
+    assert {:noreply, %{turn_id: "turn"}} =
+             Codex.handle_message(
+               %{"id" => 3, "result" => %{"turn" => %{"id" => "turn"}}},
+               state
+             )
+
+    assert_receive {^port, {:data, message}}
+    assert %{"method" => "turn/steer"} = message |> String.trim() |> JSON.decode!()
+    Port.close(port)
   end
 end
