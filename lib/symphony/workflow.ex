@@ -61,7 +61,7 @@ defmodule Symphony.Workflow do
 
   defp write(%{path: path, issues: issues} = state) do
     File.write!(
-      path <> ".json",
+      Path.rootname(path) <> ".json",
       issues
       |> Enum.map(fn %{id: id} = issue ->
         %{id: id, session_id: Map.get(issue, :session_id)}
@@ -73,7 +73,7 @@ defmodule Symphony.Workflow do
   end
 
   defp read(%{path: path} = state) do
-    case File.read(path <> ".json") do
+    case File.read(Path.rootname(path) <> ".json") do
       {:ok, json} ->
         Map.put(
           state,

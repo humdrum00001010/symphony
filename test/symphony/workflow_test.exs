@@ -284,11 +284,11 @@ defmodule Symphony.WorkflowTest do
       """
     )
 
-    File.write!(path <> ".json", ~s([{"id":"1","session_id":"thread"}]))
+    File.write!(Path.rootname(path) <> ".json", ~s([{"id":"1","session_id":"thread"}]))
 
     on_exit(fn ->
       File.rm(path)
-      File.rm(path <> ".json")
+      File.rm(Path.rootname(path) <> ".json")
     end)
 
     assert {:ok,
