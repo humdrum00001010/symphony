@@ -1,53 +1,200 @@
 defmodule Symphony.WorkflowTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Symphony.Workflow
 
   test "updates only new issue versions" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
+
     current = %{
       id: "1",
-      version: "1"
+      author: "me",
+      title: "Old",
+      content: "Body",
+      state: "OPEN",
+      version: "1",
+      sub_issue: nil,
+      comments: [],
+      agent: self(),
+      session_id: "session"
     }
 
-    assert %{issues: [^current, %{id: "2", version: "1"}]} =
+    state = %{
+      issues: [current],
+      path: path,
+      repo: %{id: "owner/repo", states: ["OPEN", "CLOSED"], terminal_states: ["CLOSED"]}
+    }
+
+    fresh = current |> Map.delete(:agent) |> Map.delete(:session_id)
+
+    assert ^state = Workflow.update_issues(state, [fresh])
+    refute File.exists?(path <> ".json")
+    refute_receive {:"$gen_cast", _}
+
+    assert %{issues: [%{title: "New", agent: agent}]} =
              Workflow.update_issues(
-               %{issues: [current]},
-               [
-                 %{id: "1", version: "1"},
-                 %{id: "2", version: "1"}
-               ]
+               state,
+               [%{fresh | title: "New", version: "2"}]
              )
 
-    assert %{issues: [%{id: "1", version: "2"}]} =
-             Workflow.update_issues(
-               %{issues: [current]},
-               [%{id: "1", version: "2"}]
+    assert agent == self()
+    assert_receive {:"$gen_cast", {:update, %{title: "New", version: "2"}}}
+
+    on_exit(fn -> File.rm(path <> ".json") end)
+  end
+
+  defmodule AgentProtocol do
+    @behaviour Symphony.Agents.Protocol
+
+    def command, do: "sleep 10"
+    def handle_message(_message, state), do: {:noreply, state}
+  end
+
+  test "starts an agent for a fresh issue" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
+
+    supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
+
+    issue = %{
+      id: "1",
+      author: "me",
+      title: "Fix",
+      content: "Body",
+      state: "OPEN",
+      version: "1",
+      sub_issue: nil,
+      comments: []
+    }
+
+    state =
+      Workflow.update_issues(
+        %{
+          "config" => %{
+            "id" => "owner/repo",
+            "states" => ["OPEN"],
+            "terminal_states" => ["CLOSED"]
+          },
+          agent: AgentProtocol,
+          issues: [],
+          path: path,
+          planner: Symphony.Planners.Github,
+          prompt: "Solve the issue",
+          repo: %{
+            id: "owner/repo",
+            states: ["OPEN", "CLOSED"],
+            terminal_states: ["CLOSED"]
+          },
+          supervisor: supervisor
+        },
+        [issue]
+      )
+
+    assert %{issues: [%{agent: agent, session_id: nil}]} = state
+
+    assert Process.alive?(agent)
+
+    Process.exit(agent, :kill)
+    refute Process.alive?(agent)
+
+    state = Workflow.update_issues(state, [issue])
+
+    assert %{issues: [%{agent: restarted}]} = state
+    assert restarted != agent
+    assert Process.alive?(restarted)
+
+    assert %{issues: []} =
+             Workflow.update_issues(state, [%{issue | state: "CLOSED", version: "2"}])
+
+    refute Process.alive?(restarted)
+
+    on_exit(fn -> File.rm(path <> ".json") end)
+  end
+
+  test "assigns each session to one issue" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
+
+    on_exit(fn -> File.rm(path <> ".json") end)
+
+    assert {:reply, :ok,
+            %{
+              issues: [
+                %{id: "1", session_id: "session"},
+                %{id: "2", session_id: "other-session"}
+              ]
+            }} =
+             Workflow.handle_call(
+               {:update_session, "1", "session"},
+               self(),
+               %{
+                 path: path,
+                 issues: [
+                   %{id: "1", session_id: nil},
+                   %{id: "2", session_id: "other-session"}
+                 ]
+               }
              )
+
+    assert [
+             %{"id" => "1", "session_id" => "session"},
+             %{"id" => "2", "session_id" => "other-session"}
+           ] = path |> Kernel.<>(".json") |> File.read!() |> JSON.decode!()
   end
 
-  test "starts from its workflow file" do
-    path = "workflows/WORKFLOW.md"
+  test "loads issue sessions beside the workflow" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}.md")
 
-    workflow =
-      start_supervised!({Workflow, path: path, interval: 60_000})
+    File.write!(
+      path,
+      """
+      ---
+      config:
+        vendor: github
+        id: owner/repo
+        states:
+          - OPEN
+        terminal_states:
+          - CLOSED
+      agent:
+        vendor: codex
+      ---
 
-    assert %{
-             "config" => %{"vendor" => "github"},
-             interval: 60_000,
-             prompt: "prompts..."
-           } = :sys.get_state(workflow)
+      prompt
+      """
+    )
+
+    File.write!(path <> ".json", ~s([{"id":"1","session_id":"thread"}]))
+
+    on_exit(fn ->
+      File.rm(path)
+      File.rm(path <> ".json")
+    end)
+
+    assert {:ok,
+            %{
+              path: ^path,
+              issues: [%{id: "1", session_id: "thread"}],
+              supervisor: supervisor
+            }, {:continue, :start}} = Workflow.init(path: path)
+
+    Supervisor.stop(supervisor)
   end
 
-  test "starts more than one workflow under the same supervisor" do
+  test "loads its workflow file" do
     path = "workflows/WORKFLOW.md"
 
-    {:ok, supervisor} =
-      [
-        Supervisor.child_spec({Workflow, path: path}, id: :first),
-        Supervisor.child_spec({Workflow, path: path}, id: :second)
-      ]
-      |> Supervisor.start_link(strategy: :one_for_one)
+    assert {:ok,
+            %{
+              "config" => %{"vendor" => "github"},
+              interval: 60_000,
+              prompt:
+                "Make empty PR corresponding the issue you received.\n\nAppend comment on the issue with \"∎\" when you are done.",
+              supervisor: supervisor
+            }, {:continue, :start}} = Workflow.init(path: path, interval: 60_000)
 
-    assert %{active: 2, workers: 2} = Supervisor.count_children(supervisor)
+    Supervisor.stop(supervisor)
   end
 end
