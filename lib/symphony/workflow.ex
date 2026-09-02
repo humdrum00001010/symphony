@@ -31,7 +31,8 @@ defmodule Symphony.Workflow do
      |> resolve_agent()
      |> resolve_planner()
      |> read()
-     |> assign_pool(), {:continue, :start}}
+     |> assign_pool()
+     |> assign_version(), {:continue, :start}}
   end
 
   @impl true
@@ -54,6 +55,8 @@ defmodule Symphony.Workflow do
     {:ok, supervisor} = DynamicSupervisor.start_link(strategy: :one_for_one)
     Map.put(state, :supervisor, supervisor)
   end
+
+  defp assign_version(state), do: Map.put(state, :version, 0)
 
   defp write(%{path: path, issues: issues} = state) do
     File.write!(
@@ -188,26 +191,27 @@ defmodule Symphony.Workflow do
   def handle_info(:tick, state) do
     Process.send_after(self(), :tick, state.interval)
     pid = self()
+    version = state.version + 1
 
     {:ok, _task} =
       Task.start(fn ->
-        send(pid, {:update, fetch_issues(state)})
+        send(pid, {:update, version, fetch_issues(state)})
       end)
 
+    {:noreply, Map.put(state, :version, version)}
+  end
+
+  def handle_info({:update, version, _result}, %{version: current} = state)
+      when version < current do
     {:noreply, state}
   end
 
-  # TODO: Issues should have version
-  def handle_info({:update, {:ok, issues}}, state) do
+  def handle_info({:update, version, {:ok, issues}}, %{version: version} = state) do
     {:noreply, update_issues(state, issues)}
   end
 
-  def handle_info({:update, {:error, reason}}, state) do
+  def handle_info({:update, version, {:error, reason}}, %{version: version} = state) do
     Logger.warning("Failed: #{inspect(reason)}")
-    {:noreply, state}
-  end
-
-  def handle_info({:update, _result}, state) do
     {:noreply, state}
   end
 

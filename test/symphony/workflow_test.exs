@@ -3,6 +3,63 @@ defmodule Symphony.WorkflowTest do
 
   alias Symphony.Workflow
 
+  defmodule Planner do
+    def fetch_issues(%{test: test}) do
+      send(test, {:fetch, self()})
+
+      receive do
+        {:return, result} -> result
+      end
+    end
+  end
+
+  test "ignores older issue results" do
+    path =
+      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
+
+    issue = %{
+      id: "1",
+      author: "me",
+      title: "Issue",
+      content: "Body",
+      state: "OPEN",
+      version: "0",
+      sub_issue: nil,
+      comments: [],
+      agent: self(),
+      session_id: "session"
+    }
+
+    state = %{
+      interval: 60_000,
+      issues: [issue],
+      path: path,
+      planner: Planner,
+      repo: %{test: self(), terminal_states: []},
+      version: 0
+    }
+
+    {:noreply, state} = Workflow.handle_info(:tick, state)
+    assert_receive {:fetch, first}
+
+    {:noreply, state} = Workflow.handle_info(:tick, state)
+    assert_receive {:fetch, second}
+
+    send(second, {:return, {:ok, [%{issue | version: "2"} |> Map.drop([:agent, :session_id])]}})
+    assert_receive current = {:update, 2, {:ok, _issues}}
+    {:noreply, state} = Workflow.handle_info(current, state)
+
+    send(first, {:return, {:ok, [%{issue | version: "1"} |> Map.drop([:agent, :session_id])]}})
+    assert_receive stale = {:update, 1, {:ok, _issues}}
+
+    assert {:noreply, ^state} =
+             Workflow.handle_info(stale, state)
+
+    assert %{issues: [%{version: "2"}]} = state
+
+    on_exit(fn -> File.rm(path <> ".json") end)
+  end
+
   test "updates only new issue versions" do
     path =
       Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
