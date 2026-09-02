@@ -161,7 +161,7 @@ defmodule Symphony.Workflow do
          state
        ) do
     if Process.alive?(agent) do
-      :ok = Agent.send_message(agent, issue)
+      :ok = Agent.send_message(agent, :issue_updated)
 
       issue
       |> Agent.assign_agent(current)

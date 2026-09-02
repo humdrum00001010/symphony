@@ -3,6 +3,9 @@ defmodule Symphony.Agents.Codex do
   alias Symphony.Agents.Protocol
   alias Symphony.Planners
 
+  # An agent session owns its issue context; updates only invalidate that view.
+  @issue_updated "Issue was updated. Re-read the issue with `gh` and act on the latest state."
+
   @behaviour Protocol
 
   def command, do: "codex app-server 2>/dev/null"
@@ -63,24 +66,50 @@ defmodule Symphony.Agents.Codex do
     {:noreply, Map.put(state, :turn_id, turn_id)}
   end
 
+  def handle_message({:update, :issue_updated}, %{steering: true} = state) do
+    {:noreply, Map.put(state, :pending, :issue_updated)}
+  end
+
   def handle_message(
-        {:update, diff},
+        {:update, :issue_updated},
         %{session_id: session_id, turn_id: turn_id} = state
       ) do
     {:noreply,
-     Agent.send_message(state, %{
+     state
+     |> Map.delete(:pending)
+     |> Map.put(:steering, true)
+     |> Agent.send_message(%{
        method: "turn/steer",
        id: 4,
        params: %{
          threadId: session_id,
          expectedTurnId: turn_id,
-         input: [%{type: "text", text: JSON.encode!(diff)}]
+         input: [%{type: "text", text: @issue_updated}]
        }
      })}
   end
 
-  def handle_message({:update, issue}, state) do
-    {:noreply, Map.put(state, :pending, issue)}
+  def handle_message(%{"id" => 4, "result" => _result}, %{pending: :issue_updated} = state) do
+    handle_message(
+      {:update, :issue_updated},
+      state |> Map.delete(:pending) |> Map.delete(:steering)
+    )
+  end
+
+  def handle_message(%{"id" => 4, "result" => _result}, state) do
+    {:noreply, Map.delete(state, :steering)}
+  end
+
+  def handle_message(%{"id" => 4, "error" => _error}, state) do
+    {:noreply,
+     state
+     |> Map.delete(:steering)
+     |> Map.delete(:turn_id)
+     |> Map.put(:pending, :issue_updated)}
+  end
+
+  def handle_message({:update, :issue_updated}, state) do
+    {:noreply, Map.put(state, :pending, :issue_updated)}
   end
 
   def handle_message(%{"id" => 2, "error" => _}, state) do
