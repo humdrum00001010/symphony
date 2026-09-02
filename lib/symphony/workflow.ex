@@ -29,10 +29,20 @@ defmodule Symphony.Workflow do
     {:noreply, state}
   end
 
-  # * Tickets would flow here. if matches state, does nothing
-  def update(state, _tickets) do
-    state
+  def update_issues(%{issues: current} = state, issues) do
+    Map.put(
+      state,
+      :issues,
+      for issue <- issues do
+        case Enum.find(current, &(&1.id == issue.id)) do
+          %{version: version} = current when version == issue.version -> current
+          _ -> issue
+        end
+      end
+    )
   end
+
+  def update(state, _tickets), do: state
 
   defp get_workflow(path) do
     ["", yaml, prompt] =

@@ -3,6 +3,28 @@ defmodule Symphony.WorkflowTest do
 
   alias Symphony.Workflow
 
+  test "updates only new issue versions" do
+    current = %{
+      id: "1",
+      version: "1"
+    }
+
+    assert %{issues: [^current, %{id: "2", version: "1"}]} =
+             Workflow.update_issues(
+               %{issues: [current]},
+               [
+                 %{id: "1", version: "1"},
+                 %{id: "2", version: "1"}
+               ]
+             )
+
+    assert %{issues: [%{id: "1", version: "2"}]} =
+             Workflow.update_issues(
+               %{issues: [current]},
+               [%{id: "1", version: "2"}]
+             )
+  end
+
   test "starts from its workflow file" do
     path = "workflows/WORKFLOW.md"
 
