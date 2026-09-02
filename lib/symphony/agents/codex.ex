@@ -3,6 +3,9 @@ defmodule Symphony.Agents.Codex do
   alias Symphony.Agents.Protocol
   alias Symphony.Planners
 
+  # An agent session owns its issue context; updates only invalidate that view.
+  @issue_updated "Issue was updated. Re-read the issue with `gh` and act on the latest state."
+
   @behaviour Protocol
 
   def command, do: "codex app-server 2>/dev/null"
@@ -63,24 +66,35 @@ defmodule Symphony.Agents.Codex do
     {:noreply, Map.put(state, :turn_id, turn_id)}
   end
 
-  def handle_message(
-        {:update, diff},
-        %{session_id: session_id, turn_id: turn_id} = state
-      ) do
-    {:noreply,
-     Agent.send_message(state, %{
-       method: "turn/steer",
-       id: 4,
-       params: %{
-         threadId: session_id,
-         expectedTurnId: turn_id,
-         input: [%{type: "text", text: JSON.encode!(diff)}]
-       }
-     })}
+  def handle_message({:update, :issue_updated}, %{steering: true} = state) do
+    {:noreply, queue_issue_notification(state)}
   end
 
-  def handle_message({:update, issue}, state) do
-    {:noreply, Map.put(state, :pending, issue)}
+  def handle_message(
+        {:update, :issue_updated},
+        %{turn_id: _turn_id} = state
+      ) do
+    {:noreply, send_issue_notification(state)}
+  end
+
+  def handle_message(%{"id" => 4, "result" => _result}, %{pending: :issue_updated} = state) do
+    {:noreply, state |> finish_issue_notification() |> send_issue_notification()}
+  end
+
+  def handle_message(%{"id" => 4, "result" => _result}, state) do
+    {:noreply, finish_issue_notification(state)}
+  end
+
+  def handle_message(%{"id" => 4, "error" => _error}, state) do
+    {:noreply,
+     state
+     |> finish_issue_notification()
+     |> Map.delete(:turn_id)
+     |> queue_issue_notification()}
+  end
+
+  def handle_message({:update, :issue_updated}, state) do
+    {:noreply, queue_issue_notification(state)}
   end
 
   def handle_message(%{"id" => 2, "error" => _}, state) do
@@ -129,6 +143,25 @@ defmodule Symphony.Agents.Codex do
       params: %{threadId: session_id, excludeTurns: true}
     })
   end
+
+  defp send_issue_notification(%{session_id: session_id, turn_id: turn_id} = state) do
+    state
+    |> Map.delete(:pending)
+    |> Map.put(:steering, true)
+    |> Agent.send_message(%{
+      method: "turn/steer",
+      id: 4,
+      params: %{
+        threadId: session_id,
+        expectedTurnId: turn_id,
+        input: [%{type: "text", text: @issue_updated}]
+      }
+    })
+  end
+
+  defp send_issue_notification(state), do: queue_issue_notification(state)
+  defp finish_issue_notification(state), do: Map.delete(state, :steering)
+  defp queue_issue_notification(state), do: Map.put(state, :pending, :issue_updated)
 
   defp start_turn(%{session_id: session_id} = state, input) do
     Agent.send_message(Map.delete(state, :turn_id), %{

@@ -98,7 +98,7 @@ defmodule Symphony.WorkflowTest do
              )
 
     assert agent == self()
-    assert_receive {:"$gen_cast", {:update, %{title: "New", version: "2"}}}
+    assert_receive {:"$gen_cast", {:update, :issue_updated}}
 
     on_exit(fn -> File.rm(path <> ".json") end)
   end

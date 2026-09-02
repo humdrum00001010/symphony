@@ -149,20 +149,113 @@ defmodule Symphony.AgentTest do
   test "steers the latest update after the turn starts" do
     port = Port.open({:spawn, "cat"}, [:binary])
 
-    assert {:noreply, state = %{pending: %{version: 2}}} =
-             Codex.handle_message({:update, %{version: 2}}, %{
+    assert {:noreply, state = %{pending: :issue_updated}} =
+             Codex.handle_message({:update, :issue_updated}, %{
                port: port,
                session_id: "thread"
              })
 
-    assert {:noreply, %{turn_id: "turn"}} =
+    assert {:noreply, state = %{steering: true, turn_id: "turn"}} =
              Codex.handle_message(
                %{"id" => 3, "result" => %{"turn" => %{"id" => "turn"}}},
                state
              )
 
     assert_receive {^port, {:data, message}}
-    assert %{"method" => "turn/steer"} = message |> String.trim() |> JSON.decode!()
+
+    assert %{
+             "method" => "turn/steer",
+             "params" => %{
+               "input" => [
+                 %{
+                   "text" =>
+                     "Issue was updated. Re-read the issue with `gh` and act on the latest state."
+                 }
+               ]
+             }
+           } = message |> String.trim() |> JSON.decode!()
+
+    assert {:noreply, state} = Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
+    refute Map.has_key?(state, :steering)
+
     Port.close(port)
+  end
+
+  test "retries an issue update when steering misses the active turn" do
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    assert {:noreply, state = %{steering: true}} =
+             Codex.handle_message({:update, :issue_updated}, %{
+               port: port,
+               session_id: "thread",
+               turn_id: "completed-turn"
+             })
+
+    assert_receive {^port, {:data, _message}}
+
+    assert {:noreply, state = %{pending: :issue_updated}} =
+             Codex.handle_message(%{"id" => 4, "error" => %{}}, state)
+
+    refute Map.has_key?(state, :turn_id)
+
+    assert {:noreply, state = %{steering: true, turn_id: "next-turn"}} =
+             Codex.handle_message(
+               %{"id" => 3, "result" => %{"turn" => %{"id" => "next-turn"}}},
+               state
+             )
+
+    assert_receive {^port, {:data, message}}
+
+    assert %{
+             "method" => "turn/steer",
+             "params" => %{"expectedTurnId" => "next-turn"}
+           } = message |> String.trim() |> JSON.decode!()
+
+    assert {:noreply, state} = Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
+    refute Map.has_key?(state, :steering)
+
+    Port.close(port)
+  end
+
+  test "serializes overlapping issue updates" do
+    port = Port.open({:spawn, "cat"}, [:binary])
+
+    assert {:noreply, state = %{steering: true}} =
+             Codex.handle_message({:update, :issue_updated}, %{
+               port: port,
+               session_id: "thread",
+               turn_id: "turn"
+             })
+
+    assert_receive {^port, {:data, _message}}
+
+    assert {:noreply, state = %{pending: :issue_updated, steering: true}} =
+             Codex.handle_message({:update, :issue_updated}, state)
+
+    refute_receive {^port, {:data, _message}}
+
+    assert {:noreply, state = %{steering: true}} =
+             Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
+
+    refute Map.has_key?(state, :pending)
+    assert_receive {^port, {:data, _message}}
+
+    assert {:noreply, state = %{pending: :issue_updated}} =
+             Codex.handle_message(%{"id" => 4, "error" => %{}}, state)
+
+    refute Map.has_key?(state, :steering)
+    refute Map.has_key?(state, :turn_id)
+
+    Port.close(port)
+  end
+
+  test "defers a coalesced update until the next turn" do
+    assert {:noreply, state = %{pending: :issue_updated}} =
+             Codex.handle_message(%{"id" => 4, "result" => %{}}, %{
+               pending: :issue_updated,
+               steering: true
+             })
+
+    refute Map.has_key?(state, :steering)
   end
 end
