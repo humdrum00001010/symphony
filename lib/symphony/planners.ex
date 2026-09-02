@@ -32,7 +32,7 @@ defmodule Symphony.Planners do
     comments
     |> List.last()
     |> Map.get(:content, "")
-    |> String.contains?("∎")
+    |> String.ends_with?("∎")
   end
 
   def terminal?(%{state: state}, %{terminal_states: terminal_states}),

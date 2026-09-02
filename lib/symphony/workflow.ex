@@ -42,12 +42,12 @@ defmodule Symphony.Workflow do
   end
 
   def update_issues(%{issues: current} = state, issues) do
-    for issue <- issues,
-        !Planners.done?(issue),
-        !Planners.terminal?(issue, state.repo) do
-      current
-      |> Enum.find(&(&1.id == issue.id))
-      |> update_agent(issue, state)
+    for issue <- issues, !Planners.terminal?(issue, state.repo) do
+      if Planners.done?(issue) do
+        Enum.find(current, Map.put(issue, :session_id, nil), &(&1.id == issue.id))
+      else
+        Enum.find(current, &(&1.id == issue.id)) |> update_agent(issue, state)
+      end
     end
     |> put_issues(state)
   end

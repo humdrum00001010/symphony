@@ -159,6 +159,10 @@ defmodule Symphony.WorkflowTest do
       supervisor: supervisor
     }
 
+    state = Workflow.update_issues(state, [%{issue | comments: [%{content: "∎"}]}])
+    assert %{issues: [%{session_id: nil}]} = state
+    refute File.dir?(Path.join(path, "owner/repo/1"))
+
     state = Workflow.update_issues(state, [issue])
 
     assert %{issues: [%{agent: agent, session_id: nil}]} = state
@@ -179,13 +183,27 @@ defmodule Symphony.WorkflowTest do
     assert File.dir?(Path.join(path, "owner/repo/1"))
     assert File.read!(Path.join(path, "mounts")) == "mount\n"
 
-    {:os_pid, pid} = restarted |> :sys.get_state() |> Map.get(:port) |> Port.info(:os_pid)
+    Process.exit(restarted, :kill)
+
+    state =
+      Workflow.update_issues(state, [
+        %{issue | version: "2", comments: [%{content: "∎"}]}
+      ])
+
+    assert %{issues: [%{agent: ^restarted}]} = state
+    refute Process.alive?(restarted)
+
+    state = Workflow.update_issues(state, [%{issue | version: "3"}])
+    assert %{issues: [%{agent: resumed}]} = state
+    assert File.read!(Path.join(path, "mounts")) == "mount\n"
+
+    {:os_pid, pid} = resumed |> :sys.get_state() |> Map.get(:port) |> Port.info(:os_pid)
     {_, 0} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
 
     assert %{issues: []} =
              Workflow.update_issues(state, [])
 
-    refute Process.alive?(restarted)
+    refute Process.alive?(resumed)
     {_, 1} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
     assert File.read!(Path.join(path, "terminated")) == "1"
   end
