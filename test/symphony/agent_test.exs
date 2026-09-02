@@ -2,6 +2,7 @@ defmodule Symphony.AgentTest do
   use ExUnit.Case, async: false
 
   alias Symphony.Agent
+  alias Symphony.Agents.Codex
 
   defmodule Workflow do
     use GenServer
@@ -122,5 +123,15 @@ defmodule Symphony.AgentTest do
     assert File.read!(messages) |> String.split("\"method\":\"turn/start\"") |> length() == 3
     assert File.read!(messages) |> String.split("Fix the issue") |> length() == 2
     assert File.read!(checks) == "2"
+  end
+
+  test "buffers partial Codex messages" do
+    assert {:noreply, state = %{buffer: ~s({"id":0)}} =
+             Codex.handle_message({:port, {:data, ~s({"id":0)}}, %{port: :port})
+
+    assert {:noreply, %{buffer: ""}} =
+             Codex.handle_message({:port, {:data, ~s(,"result":{}}\n)}}, state)
+
+    assert_receive %{"id" => 0, "result" => %{}}
   end
 end

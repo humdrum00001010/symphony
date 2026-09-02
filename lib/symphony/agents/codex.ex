@@ -13,12 +13,18 @@ defmodule Symphony.Agents.Codex do
   end
 
   def handle_message({port, {:data, data}}, %{port: port} = state) do
-    data
-    |> String.split("\n", trim: true)
+    {messages, [buffer]} =
+      state
+      |> Map.get(:buffer, "")
+      |> Kernel.<>(data)
+      |> String.split("\n")
+      |> Enum.split(-1)
+
+    messages
     |> Enum.map(&parse_message/1)
     |> Enum.each(&send(self(), &1))
 
-    {:noreply, state}
+    {:noreply, Map.put(state, :buffer, buffer)}
   end
 
   def handle_message(%{"id" => 0, "result" => _result}, state) do
