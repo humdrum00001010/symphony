@@ -8,8 +8,10 @@ defmodule Symphony.Agent do
           planner: module(),
           port: port() | nil,
           prompt: String.t(),
+          group: pid(),
           repo: Planners.repo(),
           session_id: String.t() | nil,
+          workspace: String.t(),
           workflow: pid()
         }
 
@@ -35,12 +37,43 @@ defmodule Symphony.Agent do
            prompt: owner.prompt <> "\n\n" <> JSON.encode!(issue),
            repo: owner.repo,
            session_id: Map.get(issue, :session_id),
+           workspace:
+             owner["config"]["workspace"]
+             |> Path.expand()
+             |> Path.join(owner.repo.id)
+             |> Path.join(issue.id),
            workflow: self()
          }}
       )
 
-    Map.put(issue, :agent, agent)
+    assign_agent(issue, agent)
   end
+
+  @spec assign_agent(map(), pid() | map()) :: map()
+  def assign_agent(issue, agent) when is_pid(agent) do
+    assign_agent(issue, %{agent: agent, group: GenServer.call(agent, :group)})
+  end
+
+  def assign_agent(issue, %{agent: agent, group: group}) do
+    issue
+    |> Map.put(:agent, agent)
+    |> Map.put(:group, group)
+  end
+
+  @spec stop_agent(map()) :: :ok
+  def stop_agent(%{agent: agent, group: group}) do
+    reference = Process.monitor(group)
+
+    if Process.alive?(agent) do
+      GenServer.stop(agent, :normal, :infinity)
+    end
+
+    receive do
+      {:DOWN, ^reference, :process, ^group, _reason} -> :ok
+    end
+  end
+
+  def stop_agent(_issue), do: :ok
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
@@ -58,7 +91,7 @@ defmodule Symphony.Agent do
   @impl true
   def init(state) do
     send(self(), :wake)
-    {:ok, state |> assign_port()}
+    {:ok, state |> assign_port() |> assign_group()}
   end
 
   @impl true
@@ -79,7 +112,49 @@ defmodule Symphony.Agent do
     agent.handle_message(message, state)
   end
 
-  defp assign_port(%{port: nil, agent: agent} = state) do
-    Map.put(state, :port, Port.open({:spawn, agent.command()}, [:binary, :exit_status]))
+  @impl true
+  def handle_call(:group, _from, state), do: {:reply, state.group, state}
+
+  defp assign_port(%{port: nil, agent: agent, workspace: workspace} = state) do
+    Map.put(
+      state,
+      :port,
+      Port.open({:spawn, agent.command()}, [:binary, :exit_status, {:cd, workspace}])
+    )
+  end
+
+  defp assign_group(%{port: port} = state) do
+    owner = self()
+    {:os_pid, pid} = Port.info(port, :os_pid)
+    Map.put(state, :group, spawn(fn -> reap(owner, pid) end))
+  end
+
+  defp reap(owner, pid) do
+    reference = Process.monitor(owner)
+
+    receive do
+      {:DOWN, ^reference, :process, ^owner, _reason} -> kill_group(pid)
+    end
+  end
+
+  defp kill_group(pid) do
+    case System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true) do
+      {_, 0} ->
+        await_group(pid)
+
+      {_, 1} ->
+        :ok
+    end
+  end
+
+  defp await_group(pid) do
+    case System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true) do
+      {_, 0} ->
+        Process.sleep(1)
+        await_group(pid)
+
+      {_, 1} ->
+        :ok
+    end
   end
 end

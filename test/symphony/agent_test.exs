@@ -25,6 +25,7 @@ defmodule Symphony.AgentTest do
     runs = Path.join(directory, "runs")
     messages = Path.join(directory, "messages")
     checks = Path.join(directory, "checks")
+    cwd = Path.join(directory, "cwd")
     path = System.fetch_env!("PATH")
 
     File.mkdir!(directory)
@@ -34,6 +35,7 @@ defmodule Symphony.AgentTest do
       ~S"""
       #!/bin/sh
       printf 'run\n' >> "$CODEX_RUNS"
+      pwd > "$CODEX_CWD"
 
       while IFS= read -r message
       do
@@ -81,6 +83,7 @@ defmodule Symphony.AgentTest do
     System.put_env("CODEX_MESSAGES", messages)
     System.put_env("CODEX_TURNS", Path.join(directory, "turns"))
     System.put_env("GH_CHECKS", checks)
+    System.put_env("CODEX_CWD", cwd)
 
     on_exit(fn ->
       System.put_env("PATH", path)
@@ -88,6 +91,7 @@ defmodule Symphony.AgentTest do
       System.delete_env("CODEX_MESSAGES")
       System.delete_env("CODEX_TURNS")
       System.delete_env("GH_CHECKS")
+      System.delete_env("CODEX_CWD")
       File.rm_rf!(directory)
     end)
 
@@ -100,7 +104,8 @@ defmodule Symphony.AgentTest do
         issue: "1",
         workflow: start_supervised!({Workflow, self()}),
         planner: Symphony.Planners.Github,
-        repo: %{id: "owner/repo", states: ["Open"], terminal_states: ["CLOSED"]}
+        repo: %{id: "owner/repo", states: ["Open"], terminal_states: ["CLOSED"]},
+        workspace: directory
       })
 
     reference = Process.monitor(agent)
@@ -116,6 +121,10 @@ defmodule Symphony.AgentTest do
     assert_receive {:update_session, "1", nil}
     assert_receive {:update_session, "1", "thread-1"}
     assert File.read!(runs) == "run\n"
+
+    assert (cwd |> File.read!() |> String.trim() |> File.stat!()).inode ==
+             (directory |> File.stat!()).inode
+
     assert File.read!(messages) =~ "\"method\":\"thread/resume\""
     assert File.read!(messages) =~ "\"excludeTurns\":true"
     assert File.read!(messages) =~ "\"method\":\"thread/start\""

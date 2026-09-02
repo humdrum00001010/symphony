@@ -27,6 +27,7 @@ defmodule Symphony.WorkflowTest do
       sub_issue: nil,
       comments: [],
       agent: self(),
+      group: self(),
       session_id: "session"
     }
 
@@ -74,6 +75,7 @@ defmodule Symphony.WorkflowTest do
       sub_issue: nil,
       comments: [],
       agent: self(),
+      group: self(),
       session_id: "session"
     }
 
@@ -104,13 +106,21 @@ defmodule Symphony.WorkflowTest do
   defmodule AgentProtocol do
     @behaviour Symphony.Agents.Protocol
 
-    def command, do: "sleep 10"
+    def command, do: "sleep 100 & wait"
     def handle_message(_message, state), do: {:noreply, state}
   end
 
   test "starts an agent for a fresh issue" do
     path =
-      Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workflow-#{System.pid()}-#{System.unique_integer([:positive])}"
+      )
+
+    on_exit(fn ->
+      File.rm_rf(path)
+      File.rm(path <> ".json")
+    end)
 
     supervisor = start_supervised!({DynamicSupervisor, strategy: :one_for_one})
 
@@ -125,33 +135,38 @@ defmodule Symphony.WorkflowTest do
       comments: []
     }
 
-    state =
-      Workflow.update_issues(
-        %{
-          "config" => %{
-            "id" => "owner/repo",
-            "states" => ["OPEN"],
-            "terminal_states" => ["CLOSED"]
-          },
-          agent: AgentProtocol,
-          issues: [],
-          path: path,
-          planner: Symphony.Planners.Github,
-          prompt: "Solve the issue",
-          repo: %{
-            id: "owner/repo",
-            states: ["OPEN", "CLOSED"],
-            terminal_states: ["CLOSED"]
-          },
-          supervisor: supervisor
-        },
-        [issue]
-      )
+    state = %{
+      "config" => %{
+        "id" => "owner/repo",
+        "states" => ["OPEN"],
+        "terminal_states" => ["CLOSED"],
+        "workspace" => path
+      },
+      "mount" =>
+        "mkdir -p \"$workspace/$repo_id/$issue\"; printf 'mount\\n' >> \"$workspace/mounts\"",
+      "terminate" =>
+        "rmdir \"$workspace/$repo_id/$issue\"; printf '%s' \"$issue\" > \"$workspace/terminated\"",
+      agent: AgentProtocol,
+      issues: [],
+      path: path,
+      planner: Symphony.Planners.Github,
+      prompt: "Solve the issue",
+      repo: %{
+        id: "owner/repo",
+        states: ["OPEN", "CLOSED"],
+        terminal_states: ["CLOSED"]
+      },
+      supervisor: supervisor
+    }
+
+    state = Workflow.update_issues(state, [issue])
 
     assert %{issues: [%{agent: agent, session_id: nil}]} = state
 
     assert Process.alive?(agent)
+    assert File.dir?(Path.join(path, "owner/repo/1"))
 
+    {:os_pid, killed_pid} = agent |> :sys.get_state() |> Map.get(:port) |> Port.info(:os_pid)
     Process.exit(agent, :kill)
     refute Process.alive?(agent)
 
@@ -160,13 +175,41 @@ defmodule Symphony.WorkflowTest do
     assert %{issues: [%{agent: restarted}]} = state
     assert restarted != agent
     assert Process.alive?(restarted)
+    {_, 1} = System.cmd("kill", ["-0", "-#{killed_pid}"], stderr_to_stdout: true)
+    assert File.dir?(Path.join(path, "owner/repo/1"))
+    assert File.read!(Path.join(path, "mounts")) == "mount\n"
+
+    {:os_pid, pid} = restarted |> :sys.get_state() |> Map.get(:port) |> Port.info(:os_pid)
+    {_, 0} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
 
     assert %{issues: []} =
-             Workflow.update_issues(state, [%{issue | state: "CLOSED", version: "2"}])
+             Workflow.update_issues(state, [])
 
     refute Process.alive?(restarted)
+    {_, 1} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
+    assert File.read!(Path.join(path, "terminated")) == "1"
+  end
 
-    on_exit(fn -> File.rm(path <> ".json") end)
+  test "terminates a stalled mount command" do
+    issue = %{
+      id: "1",
+      state: "OPEN",
+      comments: []
+    }
+
+    assert catch_exit(
+             Workflow.update_issues(
+               %{
+                 "config" => %{"id" => "owner/repo", "workspace" => System.tmp_dir!()},
+                 "timeout" => 10,
+                 "mount" => "sleep 100 & wait",
+                 agent: AgentProtocol,
+                 issues: [],
+                 repo: %{terminal_states: []}
+               },
+               [issue]
+             )
+           ) == {:command_timeout, "sleep 100 & wait"}
   end
 
   test "assigns each session to one issue" do
