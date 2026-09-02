@@ -66,50 +66,35 @@ defmodule Symphony.Agents.Codex do
     {:noreply, Map.put(state, :turn_id, turn_id)}
   end
 
-  def handle_message({:update, :issue_updated}, %{steering: true} = state) do
-    {:noreply, Map.put(state, :pending, :issue_updated)}
+  def handle_message({:update, :issue_updated}, %{issue_notification_in_flight: true} = state) do
+    {:noreply, defer_issue_notification(state)}
   end
 
   def handle_message(
         {:update, :issue_updated},
-        %{session_id: session_id, turn_id: turn_id} = state
+        %{turn_id: _turn_id} = state
       ) do
-    {:noreply,
-     state
-     |> Map.delete(:pending)
-     |> Map.put(:steering, true)
-     |> Agent.send_message(%{
-       method: "turn/steer",
-       id: 4,
-       params: %{
-         threadId: session_id,
-         expectedTurnId: turn_id,
-         input: [%{type: "text", text: @issue_updated}]
-       }
-     })}
+    {:noreply, send_issue_notification(state)}
   end
 
   def handle_message(%{"id" => 4, "result" => _result}, %{pending: :issue_updated} = state) do
-    handle_message(
-      {:update, :issue_updated},
-      state |> Map.delete(:pending) |> Map.delete(:steering)
-    )
+    {:noreply, state |> finish_issue_notification() |> send_issue_notification()}
   end
 
   def handle_message(%{"id" => 4, "result" => _result}, state) do
-    {:noreply, Map.delete(state, :steering)}
+    {:noreply, finish_issue_notification(state)}
   end
 
   def handle_message(%{"id" => 4, "error" => _error}, state) do
     {:noreply,
      state
-     |> Map.delete(:steering)
+     |> finish_issue_notification()
      |> Map.delete(:turn_id)
-     |> Map.put(:pending, :issue_updated)}
+     |> defer_issue_notification()}
   end
 
   def handle_message({:update, :issue_updated}, state) do
-    {:noreply, Map.put(state, :pending, :issue_updated)}
+    {:noreply, defer_issue_notification(state)}
   end
 
   def handle_message(%{"id" => 2, "error" => _}, state) do
@@ -158,6 +143,25 @@ defmodule Symphony.Agents.Codex do
       params: %{threadId: session_id, excludeTurns: true}
     })
   end
+
+  defp send_issue_notification(%{session_id: session_id, turn_id: turn_id} = state) do
+    state
+    |> Map.delete(:pending)
+    |> Map.put(:issue_notification_in_flight, true)
+    |> Agent.send_message(%{
+      method: "turn/steer",
+      id: 4,
+      params: %{
+        threadId: session_id,
+        expectedTurnId: turn_id,
+        input: [%{type: "text", text: @issue_updated}]
+      }
+    })
+  end
+
+  defp send_issue_notification(state), do: defer_issue_notification(state)
+  defp finish_issue_notification(state), do: Map.delete(state, :issue_notification_in_flight)
+  defp defer_issue_notification(state), do: Map.put(state, :pending, :issue_updated)
 
   defp start_turn(%{session_id: session_id} = state, input) do
     Agent.send_message(Map.delete(state, :turn_id), %{

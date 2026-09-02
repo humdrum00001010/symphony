@@ -155,7 +155,7 @@ defmodule Symphony.AgentTest do
                session_id: "thread"
              })
 
-    assert {:noreply, state = %{steering: true, turn_id: "turn"}} =
+    assert {:noreply, state = %{issue_notification_in_flight: true, turn_id: "turn"}} =
              Codex.handle_message(
                %{"id" => 3, "result" => %{"turn" => %{"id" => "turn"}}},
                state
@@ -176,7 +176,7 @@ defmodule Symphony.AgentTest do
            } = message |> String.trim() |> JSON.decode!()
 
     assert {:noreply, state} = Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
-    refute Map.has_key?(state, :steering)
+    refute Map.has_key?(state, :issue_notification_in_flight)
 
     Port.close(port)
   end
@@ -184,7 +184,7 @@ defmodule Symphony.AgentTest do
   test "retries an issue update when steering misses the active turn" do
     port = Port.open({:spawn, "cat"}, [:binary])
 
-    assert {:noreply, state = %{steering: true}} =
+    assert {:noreply, state = %{issue_notification_in_flight: true}} =
              Codex.handle_message({:update, :issue_updated}, %{
                port: port,
                session_id: "thread",
@@ -198,7 +198,7 @@ defmodule Symphony.AgentTest do
 
     refute Map.has_key?(state, :turn_id)
 
-    assert {:noreply, state = %{steering: true, turn_id: "next-turn"}} =
+    assert {:noreply, state = %{issue_notification_in_flight: true, turn_id: "next-turn"}} =
              Codex.handle_message(
                %{"id" => 3, "result" => %{"turn" => %{"id" => "next-turn"}}},
                state
@@ -212,7 +212,7 @@ defmodule Symphony.AgentTest do
            } = message |> String.trim() |> JSON.decode!()
 
     assert {:noreply, state} = Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
-    refute Map.has_key?(state, :steering)
+    refute Map.has_key?(state, :issue_notification_in_flight)
 
     Port.close(port)
   end
@@ -220,7 +220,7 @@ defmodule Symphony.AgentTest do
   test "serializes overlapping issue updates" do
     port = Port.open({:spawn, "cat"}, [:binary])
 
-    assert {:noreply, state = %{steering: true}} =
+    assert {:noreply, state = %{issue_notification_in_flight: true}} =
              Codex.handle_message({:update, :issue_updated}, %{
                port: port,
                session_id: "thread",
@@ -229,12 +229,12 @@ defmodule Symphony.AgentTest do
 
     assert_receive {^port, {:data, _message}}
 
-    assert {:noreply, state = %{pending: :issue_updated, steering: true}} =
+    assert {:noreply, state = %{pending: :issue_updated, issue_notification_in_flight: true}} =
              Codex.handle_message({:update, :issue_updated}, state)
 
     refute_receive {^port, {:data, _message}}
 
-    assert {:noreply, state = %{steering: true}} =
+    assert {:noreply, state = %{issue_notification_in_flight: true}} =
              Codex.handle_message(%{"id" => 4, "result" => %{}}, state)
 
     refute Map.has_key?(state, :pending)
@@ -243,9 +243,19 @@ defmodule Symphony.AgentTest do
     assert {:noreply, state = %{pending: :issue_updated}} =
              Codex.handle_message(%{"id" => 4, "error" => %{}}, state)
 
-    refute Map.has_key?(state, :steering)
+    refute Map.has_key?(state, :issue_notification_in_flight)
     refute Map.has_key?(state, :turn_id)
 
     Port.close(port)
+  end
+
+  test "defers a coalesced update until the next turn" do
+    assert {:noreply, state = %{pending: :issue_updated}} =
+             Codex.handle_message(%{"id" => 4, "result" => %{}}, %{
+               pending: :issue_updated,
+               issue_notification_in_flight: true
+             })
+
+    refute Map.has_key?(state, :issue_notification_in_flight)
   end
 end
