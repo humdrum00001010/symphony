@@ -69,7 +69,8 @@ defmodule Symphony.Agent do
     end
 
     receive do
-      {:DOWN, ^reference, :process, ^group, _reason} -> :ok
+      {:DOWN, ^reference, :process, ^group, :normal} -> :ok
+      {:DOWN, ^reference, :process, ^group, reason} -> exit(reason)
     end
   end
 
@@ -138,8 +139,19 @@ defmodule Symphony.Agent do
   end
 
   defp kill_group(pid) do
-    case System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true) do
+    case System.cmd("sh", ["-c", "kill -KILL -#{pid} 2>/dev/null"]) do
       {_, 0} ->
+        await_group(pid)
+
+      {_, 1} ->
+        assert_group_gone(pid)
+    end
+  end
+
+  defp await_group(pid) do
+    case System.cmd("pgrep", ["-g", Integer.to_string(pid)]) do
+      {_, 0} ->
+        Process.sleep(1)
         await_group(pid)
 
       {_, 1} ->
@@ -147,14 +159,10 @@ defmodule Symphony.Agent do
     end
   end
 
-  defp await_group(pid) do
-    case System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true) do
-      {_, 0} ->
-        Process.sleep(1)
-        await_group(pid)
-
-      {_, 1} ->
-        :ok
+  defp assert_group_gone(pid) do
+    case System.cmd("pgrep", ["-g", Integer.to_string(pid)]) do
+      {_, 0} -> exit({:group_kill_failed, pid})
+      {_, 1} -> :ok
     end
   end
 end
