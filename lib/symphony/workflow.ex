@@ -289,14 +289,14 @@ defmodule Symphony.Workflow do
   def handle_info(:tick, state) do
     Process.send_after(self(), :tick, state.interval)
     pid = self()
-    version = state.version + 1
+    version = System.unique_integer([:positive, :monotonic])
 
     {:ok, _task} =
       Task.start(fn ->
         send(pid, {:update, version, fetch_issues(state)})
       end)
 
-    {:noreply, Map.put(state, :version, version)}
+    {:noreply, state}
   end
 
   def handle_info({:update, version, _result}, %{version: current} = state)
@@ -304,11 +304,11 @@ defmodule Symphony.Workflow do
     {:noreply, state}
   end
 
-  def handle_info({:update, version, {:ok, issues}}, %{version: version} = state) do
-    {:noreply, update_issues(state, issues)}
+  def handle_info({:update, version, {:ok, issues}}, state) do
+    {:noreply, state |> Map.put(:version, version) |> update_issues(issues)}
   end
 
-  def handle_info({:update, version, {:error, reason}}, %{version: version} = state) do
+  def handle_info({:update, _version, {:error, reason}}, state) do
     Logger.warning("Failed: #{inspect(reason)}")
     {:noreply, state}
   end

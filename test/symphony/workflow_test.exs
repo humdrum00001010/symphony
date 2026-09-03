@@ -46,17 +46,20 @@ defmodule Symphony.WorkflowTest do
     {:noreply, state} = Workflow.handle_info(:tick, state)
     assert_receive {:fetch, second}
 
-    send(second, {:return, {:ok, [%{issue | version: "2"} |> Map.drop([:agent, :session_id])]}})
-    assert_receive current = {:update, 2, {:ok, _issues}}
-    {:noreply, state} = Workflow.handle_info(current, state)
-
     send(first, {:return, {:ok, [%{issue | version: "1"} |> Map.drop([:agent, :session_id])]}})
-    assert_receive stale = {:update, 1, {:ok, _issues}}
+    assert_receive first_update = {:update, first_version, {:ok, _issues}}
+    {:noreply, state} = Workflow.handle_info(first_update, state)
+    assert %{issues: [%{version: "1"}], version: ^first_version} = state
+
+    send(second, {:return, {:ok, [%{issue | version: "2"} |> Map.drop([:agent, :session_id])]}})
+    assert_receive second_update = {:update, second_version, {:ok, _issues}}
+    assert second_version > first_version
+    {:noreply, state} = Workflow.handle_info(second_update, state)
 
     assert {:noreply, ^state} =
-             Workflow.handle_info(stale, state)
+             Workflow.handle_info({:update, first_version, {:ok, []}}, state)
 
-    assert %{issues: [%{version: "2"}]} = state
+    assert %{issues: [%{version: "2"}], version: ^second_version} = state
 
     on_exit(fn -> File.rm(path <> ".json") end)
   end
