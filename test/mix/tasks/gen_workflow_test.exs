@@ -36,8 +36,8 @@ defmodule Mix.Tasks.Gen.WorkflowTest do
              terminal_states:
                - CLOSED
              workspace: ./.symphony/
-           mount: mkdir -p "$workspace/$repo_id" && git worktree add --detach "$workspace/$repo_id/$issue" HEAD
-           terminate: git worktree remove --force "$workspace/$repo_id/$issue"
+           mount: mkdir -p "$workspace/$repo_id" && git clone --depth 1 "https://github.com/$repo_id" "$workspace/$repo_id/$issue" 2>/dev/null
+           terminate: rm -rf "$workspace/$repo_id/$issue"
            agent:
              vendor: codex
              model: gpt-5.6-sol
@@ -65,8 +65,8 @@ defmodule Mix.Tasks.Gen.WorkflowTest do
             %{
               "config" => %{"id" => "owner/example", "vendor" => "github"},
               "mount" =>
-                "mkdir -p \"$workspace/$repo_id\" && git worktree add --detach \"$workspace/$repo_id/$issue\" HEAD",
-              "terminate" => "git worktree remove --force \"$workspace/$repo_id/$issue\"",
+                "mkdir -p \"$workspace/$repo_id\" && git clone --depth 1 \"https://github.com/$repo_id\" \"$workspace/$repo_id/$issue\" 2>/dev/null",
+              "terminate" => "rm -rf \"$workspace/$repo_id/$issue\"",
               prompt: prompt,
               supervisor: supervisor
             }, {:continue, :start}} = WorkflowRuntime.init(path: path)
