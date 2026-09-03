@@ -202,7 +202,7 @@ defmodule Symphony.Workflow do
          %{
            "config" => %{"id" => repo_id, "workspace" => workspace},
            "terminate" => command
-         } = state
+         }
        ) do
     :ok =
       run_command(
@@ -211,8 +211,7 @@ defmodule Symphony.Workflow do
           {"workspace", Path.expand(workspace)},
           {"repo_id", repo_id},
           {"issue", issue}
-        ],
-        state
+        ]
       )
 
     :ok
@@ -220,8 +219,7 @@ defmodule Symphony.Workflow do
 
   defp mount_worktree(
          %{id: issue} = current,
-         %{"config" => %{"id" => repo_id, "workspace" => workspace}, "mount" => command} =
-           state
+         %{"config" => %{"id" => repo_id, "workspace" => workspace}, "mount" => command}
        ) do
     if File.dir?(Path.join([Path.expand(workspace), repo_id, issue])) do
       current
@@ -233,56 +231,17 @@ defmodule Symphony.Workflow do
             {"workspace", Path.expand(workspace)},
             {"repo_id", repo_id},
             {"issue", issue}
-          ],
-          state
+          ]
         )
 
       current
     end
   end
 
-  defp run_command(command, env, state) do
-    port =
-      Port.open(
-        {:spawn_executable, "/bin/sh"},
-        [
-          :binary,
-          :exit_status,
-          {:args, ["-c", command]},
-          {:env,
-           Enum.map(env, fn {key, value} ->
-             {String.to_charlist(key), String.to_charlist(value)}
-           end)}
-        ]
-      )
+  defp run_command(command, env) do
+    {_, 0} = System.cmd("sh", ["-c", command], env: env)
 
-    {:os_pid, pid} = Port.info(port, :os_pid)
-
-    await_command(
-      port,
-      pid,
-      command,
-      System.monotonic_time(:millisecond) + Map.get(state, "timeout", 30_000)
-    )
-  end
-
-  defp await_command(port, pid, command, deadline) do
-    receive do
-      {^port, {:data, _data}} -> await_command(port, pid, command, deadline)
-      {^port, {:exit_status, 0}} -> :ok
-      {^port, {:exit_status, status}} -> exit({:command_failed, command, status})
-    after
-      max(deadline - System.monotonic_time(:millisecond), 0) ->
-        reference = Port.monitor(port)
-        {_, 0} = System.cmd("kill", ["-KILL", "-#{pid}"], stderr_to_stdout: true)
-
-        receive do
-          {:DOWN, ^reference, :port, ^port, _reason} -> :ok
-        end
-
-        {_, 1} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
-        exit({:command_timeout, command})
-    end
+    :ok
   end
 
   @impl true

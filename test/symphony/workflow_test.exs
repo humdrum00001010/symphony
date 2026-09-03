@@ -211,28 +211,6 @@ defmodule Symphony.WorkflowTest do
     assert File.read!(Path.join(path, "terminated")) == "1"
   end
 
-  test "terminates a stalled mount command" do
-    issue = %{
-      id: "1",
-      state: "OPEN",
-      comments: []
-    }
-
-    assert catch_exit(
-             Workflow.update_issues(
-               %{
-                 "config" => %{"id" => "owner/repo", "workspace" => System.tmp_dir!()},
-                 "timeout" => 10,
-                 "mount" => "sleep 100 & wait",
-                 agent: AgentProtocol,
-                 issues: [],
-                 repo: %{terminal_states: []}
-               },
-               [issue]
-             )
-           ) == {:command_timeout, "sleep 100 & wait"}
-  end
-
   test "assigns each session to one issue" do
     path =
       Path.join(System.tmp_dir!(), "symphony-workflow-#{System.unique_integer([:positive])}")
