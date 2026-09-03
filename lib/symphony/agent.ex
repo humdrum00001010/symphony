@@ -23,6 +23,60 @@ defmodule Symphony.Agent do
           supervisor: pid()
         }
 
+  @spec update(map() | nil, map(), owner()) :: map()
+  def update(nil, issue, owner) do
+    issue
+    |> Map.put(:session_id, nil)
+    # ! This bears in-complete git clone bug for now.
+    |> mount_work(owner)
+    |> start_agent(owner)
+  end
+
+  def update(
+        %{version: version, agent: agent, session_id: session_id} = current,
+        %{version: version} = issue,
+        owner
+      ) do
+    if Process.alive?(agent) do
+      current
+    else
+      :ok = stop_agent(current)
+
+      issue
+      |> Map.put(:session_id, session_id)
+      |> mount_work(owner)
+      |> start_agent(owner)
+    end
+  end
+
+  def update(
+        %{agent: agent, session_id: session_id} = current,
+        issue,
+        owner
+      ) do
+    if Process.alive?(agent) do
+      :ok = send_message(agent, :issue_updated)
+
+      issue
+      |> assign_agent(current)
+      |> Map.put(:session_id, session_id)
+    else
+      :ok = stop_agent(current)
+
+      issue
+      |> Map.put(:session_id, session_id)
+      |> mount_work(owner)
+      |> start_agent(owner)
+    end
+  end
+
+  def update(%{session_id: session_id}, issue, owner) do
+    issue
+    |> Map.put(:session_id, session_id)
+    |> mount_work(owner)
+    |> start_agent(owner)
+  end
+
   @spec start_agent(map(), owner()) :: map()
   def start_agent(issue, owner) do
     {:ok, agent} =
@@ -76,6 +130,28 @@ defmodule Symphony.Agent do
 
   def stop_agent(_issue), do: :ok
 
+  @spec terminate_work(map(), owner()) :: :ok
+  def terminate_work(
+        %{id: issue},
+        %{
+          "config" => %{"id" => repo_id, "workspace" => workspace},
+          "terminate" => command
+        }
+      ) do
+    {_, 0} =
+      System.cmd(
+        "sh",
+        ["-c", command],
+        env: [
+          {"workspace", Path.expand(workspace)},
+          {"repo_id", repo_id},
+          {"issue", issue}
+        ]
+      )
+
+    :ok
+  end
+
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts)
   end
@@ -128,6 +204,28 @@ defmodule Symphony.Agent do
     owner = self()
     {:os_pid, pid} = Port.info(port, :os_pid)
     Map.put(state, :group, spawn(fn -> reap(owner, pid) end))
+  end
+
+  defp mount_work(
+         %{id: issue} = current,
+         %{"config" => %{"id" => repo_id, "workspace" => workspace}, "mount" => command}
+       ) do
+    if File.dir?(Path.join([Path.expand(workspace), repo_id, issue])) do
+      current
+    else
+      {_, 0} =
+        System.cmd(
+          "sh",
+          ["-c", command],
+          env: [
+            {"workspace", Path.expand(workspace)},
+            {"repo_id", repo_id},
+            {"issue", issue}
+          ]
+        )
+
+      current
+    end
   end
 
   defp reap(owner, pid) do

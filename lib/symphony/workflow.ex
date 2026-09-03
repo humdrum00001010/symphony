@@ -42,14 +42,28 @@ defmodule Symphony.Workflow do
   end
 
   def update_issues(%{issues: current} = state, issues) do
-    for issue <- issues, !Planners.terminal?(issue, state.repo) do
-      if Planners.done?(issue) do
-        Enum.find(current, Map.put(issue, :session_id, nil), &(&1.id == issue.id))
-      else
-        Enum.find(current, &(&1.id == issue.id)) |> update_agent(issue, state)
+    updated =
+      for issue <- issues, !Planners.terminal?(issue, state.repo) do
+        if Planners.done?(issue) do
+          Enum.find(current, Map.put(issue, :session_id, nil), &(&1.id == issue.id))
+        else
+          Enum.find(current, &(&1.id == issue.id)) |> Agent.update(issue, state)
+        end
       end
+
+    if updated == current do
+      state
+    else
+      for %{id: id} = issue <- current,
+          Enum.all?(updated, &(&1.id != id)) do
+        :ok = Agent.stop_agent(issue)
+        :ok = Agent.terminate_work(issue, state)
+      end
+
+      state
+      |> Map.put(:issues, updated)
+      |> write()
     end
-    |> put_issues(state)
   end
 
   defp assign_pool(state) do
@@ -129,119 +143,6 @@ defmodule Symphony.Workflow do
         current -> current
       end)
     end)
-  end
-
-  defp update_agent(nil, issue, state) do
-    issue
-    |> Map.put(:session_id, nil)
-    |> mount_worktree(state)
-    |> Agent.start_agent(state)
-  end
-
-  defp update_agent(
-         %{version: version, agent: agent, session_id: session_id} = current,
-         %{version: version} = issue,
-         state
-       ) do
-    if Process.alive?(agent) do
-      current
-    else
-      :ok = Agent.stop_agent(current)
-
-      issue
-      |> Map.put(:session_id, session_id)
-      |> mount_worktree(state)
-      |> Agent.start_agent(state)
-    end
-  end
-
-  defp update_agent(
-         %{agent: agent, session_id: session_id} = current,
-         issue,
-         state
-       ) do
-    if Process.alive?(agent) do
-      :ok = Agent.send_message(agent, :issue_updated)
-
-      issue
-      |> Agent.assign_agent(current)
-      |> Map.put(:session_id, session_id)
-    else
-      :ok = Agent.stop_agent(current)
-
-      issue
-      |> Map.put(:session_id, session_id)
-      |> mount_worktree(state)
-      |> Agent.start_agent(state)
-    end
-  end
-
-  defp update_agent(%{session_id: session_id}, issue, state) do
-    issue
-    |> Map.put(:session_id, session_id)
-    |> mount_worktree(state)
-    |> Agent.start_agent(state)
-  end
-
-  defp put_issues(issues, %{issues: issues} = state), do: state
-
-  defp put_issues(issues, state) do
-    for %{id: id} = issue <- state.issues,
-        Enum.all?(issues, &(&1.id != id)) do
-      :ok = Agent.stop_agent(issue)
-      :ok = terminate_worktree(issue, state)
-    end
-
-    state
-    |> Map.put(:issues, issues)
-    |> write()
-  end
-
-  defp terminate_worktree(
-         %{id: issue},
-         %{
-           "config" => %{"id" => repo_id, "workspace" => workspace},
-           "terminate" => command
-         }
-       ) do
-    :ok =
-      run_command(
-        command,
-        [
-          {"workspace", Path.expand(workspace)},
-          {"repo_id", repo_id},
-          {"issue", issue}
-        ]
-      )
-
-    :ok
-  end
-
-  defp mount_worktree(
-         %{id: issue} = current,
-         %{"config" => %{"id" => repo_id, "workspace" => workspace}, "mount" => command}
-       ) do
-    if File.dir?(Path.join([Path.expand(workspace), repo_id, issue])) do
-      current
-    else
-      :ok =
-        run_command(
-          command,
-          [
-            {"workspace", Path.expand(workspace)},
-            {"repo_id", repo_id},
-            {"issue", issue}
-          ]
-        )
-
-      current
-    end
-  end
-
-  defp run_command(command, env) do
-    {_, 0} = System.cmd("sh", ["-c", command], env: env)
-
-    :ok
   end
 
   @impl true
