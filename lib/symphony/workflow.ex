@@ -115,7 +115,7 @@ defmodule Symphony.Workflow do
     |> Map.put(:planner, Github)
     |> Map.put(:repo, %{
       id: config["id"],
-      states: config["states"] ++ config["terminal_states"],
+      states: config["states"],
       terminal_states: config["terminal_states"]
     })
   end
