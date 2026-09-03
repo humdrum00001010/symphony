@@ -40,8 +40,7 @@ defmodule Mix.Tasks.Gen.Workflow do
   end
 
   defp workflow(repository) do
-    # Keep mount and terminate paired in the generated contract: a detached
-    # issue worktree is the resource named by both commands.
+    # Keep mount and terminate paired around the generated issue checkout.
     """
     ---
     config:
@@ -52,8 +51,8 @@ defmodule Mix.Tasks.Gen.Workflow do
       terminal_states:
         - CLOSED
       workspace: ./.symphony/
-    mount: mkdir -p "$workspace/$repo_id" && git worktree add --detach "$workspace/$repo_id/$issue" HEAD
-    terminate: git worktree remove --force "$workspace/$repo_id/$issue"
+    mount: mkdir -p "$workspace/$repo_id" && git clone --depth 1 "https://github.com/$repo_id" "$workspace/$repo_id/$issue" 2>/dev/null
+    terminate: rm -rf "$workspace/$repo_id/$issue"
     agent:
       vendor: codex
       model: gpt-5.6-sol

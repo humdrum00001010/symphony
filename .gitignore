@@ -4,3 +4,4 @@ deps/
 .DS_Store
 .env
 workflows/
+.symphony/

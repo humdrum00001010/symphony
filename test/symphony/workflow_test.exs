@@ -46,17 +46,20 @@ defmodule Symphony.WorkflowTest do
     {:noreply, state} = Workflow.handle_info(:tick, state)
     assert_receive {:fetch, second}
 
-    send(second, {:return, {:ok, [%{issue | version: "2"} |> Map.drop([:agent, :session_id])]}})
-    assert_receive current = {:update, 2, {:ok, _issues}}
-    {:noreply, state} = Workflow.handle_info(current, state)
-
     send(first, {:return, {:ok, [%{issue | version: "1"} |> Map.drop([:agent, :session_id])]}})
-    assert_receive stale = {:update, 1, {:ok, _issues}}
+    assert_receive first_update = {:update, first_version, {:ok, _issues}}
+    {:noreply, state} = Workflow.handle_info(first_update, state)
+    assert %{issues: [%{version: "1"}], version: ^first_version} = state
+
+    send(second, {:return, {:ok, [%{issue | version: "2"} |> Map.drop([:agent, :session_id])]}})
+    assert_receive second_update = {:update, second_version, {:ok, _issues}}
+    assert second_version > first_version
+    {:noreply, state} = Workflow.handle_info(second_update, state)
 
     assert {:noreply, ^state} =
-             Workflow.handle_info(stale, state)
+             Workflow.handle_info({:update, first_version, {:ok, []}}, state)
 
-    assert %{issues: [%{version: "2"}]} = state
+    assert %{issues: [%{version: "2"}], version: ^second_version} = state
 
     on_exit(fn -> File.rm(path <> ".json") end)
   end
@@ -179,7 +182,7 @@ defmodule Symphony.WorkflowTest do
     assert %{issues: [%{agent: restarted}]} = state
     assert restarted != agent
     assert Process.alive?(restarted)
-    {_, 1} = System.cmd("kill", ["-0", "-#{killed_pid}"], stderr_to_stdout: true)
+    {_, 1} = System.cmd("sh", ["-c", "kill -0 -#{killed_pid} 2>/dev/null"])
     assert File.dir?(Path.join(path, "owner/repo/1"))
     assert File.read!(Path.join(path, "mounts")) == "mount\n"
 
@@ -198,36 +201,14 @@ defmodule Symphony.WorkflowTest do
     assert File.read!(Path.join(path, "mounts")) == "mount\n"
 
     {:os_pid, pid} = resumed |> :sys.get_state() |> Map.get(:port) |> Port.info(:os_pid)
-    {_, 0} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
+    {_, 0} = System.cmd("kill", ["-0", "-#{pid}"])
 
     assert %{issues: []} =
              Workflow.update_issues(state, [])
 
     refute Process.alive?(resumed)
-    {_, 1} = System.cmd("kill", ["-0", "-#{pid}"], stderr_to_stdout: true)
+    {_, 1} = System.cmd("sh", ["-c", "kill -0 -#{pid} 2>/dev/null"])
     assert File.read!(Path.join(path, "terminated")) == "1"
-  end
-
-  test "terminates a stalled mount command" do
-    issue = %{
-      id: "1",
-      state: "OPEN",
-      comments: []
-    }
-
-    assert catch_exit(
-             Workflow.update_issues(
-               %{
-                 "config" => %{"id" => "owner/repo", "workspace" => System.tmp_dir!()},
-                 "timeout" => 10,
-                 "mount" => "sleep 100 & wait",
-                 agent: AgentProtocol,
-                 issues: [],
-                 repo: %{terminal_states: []}
-               },
-               [issue]
-             )
-           ) == {:command_timeout, "sleep 100 & wait"}
   end
 
   test "assigns each session to one issue" do

@@ -17,6 +17,10 @@ defmodule Symphony.GithubPlannerTest do
       gh,
       ~S|#!/bin/sh
 printf '%s\n' "$*" > "$GH_ARGS_LOG"
+if [ -n "$GH_FAIL" ]; then
+  printf 'rate limited'
+  exit 1
+fi
 printf '%s' '[{"number":1,"author":{"login":"me"},"title":"Fix","body":"Body","state":"OPEN","updatedAt":"2026-01-02T00:00:00Z","comments":[{"id":"comment-1","author":{"login":"you"},"body":"Comment","createdAt":"2026-01-01T00:00:00Z"}]}]'
 |
     )
@@ -28,6 +32,7 @@ printf '%s' '[{"number":1,"author":{"login":"me"},"title":"Fix","body":"Body","s
     on_exit(fn ->
       System.put_env("PATH", path)
       System.delete_env("GH_ARGS_LOG")
+      System.delete_env("GH_FAIL")
       File.rm_rf!(directory)
     end)
 
@@ -53,6 +58,15 @@ printf '%s' '[{"number":1,"author":{"login":"me"},"title":"Fix","body":"Body","s
              })
 
     assert File.read!(arguments) =~
-             "issue list --repo owner/repo --author @me --state all"
+             "issue list --repo owner/repo --author @me --state open"
+
+    System.put_env("GH_FAIL", "1")
+
+    assert {:error, 1} =
+             Github.fetch_issues(%{
+               id: "owner/repo",
+               states: ["OPEN"],
+               terminal_states: ["CLOSED"]
+             })
   end
 end

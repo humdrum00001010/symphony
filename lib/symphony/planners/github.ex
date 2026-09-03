@@ -4,49 +4,52 @@ defmodule Symphony.Planners.Github do
   @impl true
   # * github's issue doesn't have that rich states
   def fetch_issues(%{id: repository, states: states}) do
-    {json, 0} =
-      System.cmd(
-        "gh",
-        [
-          "issue",
-          "list",
-          "--repo",
-          repository,
-          "--author",
-          "@me",
-          "--state",
-          "all",
-          "--limit",
-          "100000",
-          "--json",
-          "number,author,title,body,state,updatedAt,comments"
-        ]
-      )
+    case System.cmd(
+           "gh",
+           [
+             "issue",
+             "list",
+             "--repo",
+             repository,
+             "--author",
+             "@me",
+             "--state",
+             "open",
+             "--limit",
+             "100000",
+             "--json",
+             "number,author,title,body,state,updatedAt,comments"
+           ]
+         ) do
+      {json, 0} ->
+        {:ok,
+         json
+         |> JSON.decode!()
+         |> Enum.map(&from_json/1)
+         |> Enum.filter(&(&1.state in states))}
 
-    {:ok,
-     json
-     |> JSON.decode!()
-     |> Enum.map(&from_json/1)
-     |> Enum.filter(&(&1.state in states))}
+      {_output, status} ->
+        {:error, status}
+    end
   end
 
   @impl true
   def fetch_issue(%{id: repository}, issue_id) do
-    {json, 0} =
-      System.cmd(
-        "gh",
-        [
-          "issue",
-          "view",
-          issue_id,
-          "--repo",
-          repository,
-          "--json",
-          "number,author,title,body,state,updatedAt,comments"
-        ]
-      )
-
-    {:ok, json |> JSON.decode!() |> from_json()}
+    case System.cmd(
+           "gh",
+           [
+             "issue",
+             "view",
+             issue_id,
+             "--repo",
+             repository,
+             "--json",
+             "number,author,title,body,state,updatedAt,comments"
+           ]
+         ) do
+      {json, 0} -> {:ok, json |> JSON.decode!() |> from_json()}
+      {_output, status} -> {:error, status}
+    end
   end
 
   defp from_json(issue) do
